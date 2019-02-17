@@ -1,6 +1,10 @@
 "Original source code from http://stackoverflow.com/questions/4028697/how-do-i-download-a-zip-file-in-python-using-urllib2"
 import os
-from urllib2 import urlopen, URLError, HTTPError
+#from urllib2 import urlopen, URLError, HTTPError
+# this is old-fashioned. We should be using requests
+# or probably just some built-in function from torchvision or something
+from urllib.request import urlopen
+from urllib.error import URLError, HTTPError
 
 def download():
     url = ('http://ufldl.stanford.edu/housenumbers/train_32x32.mat')
@@ -26,7 +30,7 @@ def get(url):
             print("file exists!!")
 
     #handle errors
-    except HTTPError, e:
-        print 'HTTP Error:', e.code, url
-    except URLError, e:
-        print 'URL Error:', e.reason, url
+    except HTTPError as e:
+        print ('HTTP Error:', e.code, url)
+    except URLError as e:
+        print ('URL Error:', e.reason, url)

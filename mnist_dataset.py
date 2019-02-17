@@ -7,6 +7,8 @@ import torch.utils.data as data_utils
 from mnist import MNIST
 from common import salt_and_pepper, normalize
 
+import horovod.torch as hvd
+
 
 class Dataset():
 
@@ -21,7 +23,7 @@ class Dataset():
         mnist_train_images = normalize(mnist_train_images)
         mnist_train_labels = np.asarray(mnist_train_labels)
 
-        """divide datset by label"""
+        """divide dataset by label"""
         print("Dividing dataset...")
         sorted_train_images = []
         sorted_train_labels = []        
@@ -44,15 +46,20 @@ class Dataset():
             self.train_images.append(noise_images)
 
     def set_binary_class(self, label_0, label_1):
-        """set which classes to train, and change their labels to binary.
-        i.e., if class 1 and 8 are set, dataset only returns images with label 0 (1 -> 0) and 1 (8 -> 1)"""
+        """
+        set which classes to train, 
+        and change their labels to binary.
+        i.e., if class 1 and 8 are set, 
+        dataset only returns images with label 0 (1 -> 0) 
+        and 1 (8 -> 1)
+        """
         train_first = [(image, 0) for image in self.train_images[label_0]]
         train_second = [(image, 1) for image in self.train_images[label_1]]
         
         self.binary_train_dataset = np.asarray(train_first + train_second)
         #shuffle(self.binary_train_dataset)
         
-    def convert2tensor(self, args):
+    def convert2tensor(self, args, kwargs):
         data = np.asarray([e[0] for e in self.binary_train_dataset])
         target = np.asarray([e[1] for e in self.binary_train_dataset])
 
@@ -60,6 +67,12 @@ class Dataset():
         tensor_data = tensor_data.float()
         tensor_target = torch.from_numpy(target)
 
-        train = data_utils.TensorDataset(tensor_data, tensor_target)
-        train_loader = data_utils.DataLoader(train, batch_size=args.batch_size, shuffle = True)
+
+
+        train_dataset = data_utils.TensorDataset(tensor_data, tensor_target)
+        train_sampler = data_utils.distributed.DistributedSampler(
+            train_dataset, num_replicas=hvd.size(), rank=hvd.rank())
+        train_loader = data_utils.DataLoader(train_dataset, batch_size=args.batch_size, 
+            shuffle = False, sampler = train_sampler,
+            **kwargs)
         return train_loader

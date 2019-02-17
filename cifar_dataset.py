@@ -1,17 +1,20 @@
 import numpy as np
 import random
-import cPickle as pickle
+#import cPickle as pickle
+import pickle
 
 import torch
 import torch.utils.data as data_utils
 
 import common
 
+import horovod.torch as hvd
+
 class Dataset():
     
     def __init__(self, args):
         """load cifar dataset"""
-        print("Loading cifar dataset...")
+        print("Loading cifar dataset in a really old & clumsy way.Sorry!..")
         train_data = self.unpickle('./data/cifar/data_batch_{}'.format(random.randint(1,5)))
         test_data = self.unpickle('./data/cifar/test_batch')
         self.train_loader = self.convert2tensor(train_data, args.batch_size, args.trainset_limit)
@@ -38,7 +41,8 @@ class Dataset():
         tensor_target = torch.from_numpy(target)
 
         loader = data_utils.TensorDataset(tensor_data, tensor_target)
-        loader_dataset = data_utils.DataLoader(loader, batch_size=batch_size, shuffle = True)
+        cifar_sampler = data_utils.distributed.DistributedSampler(loader, num_replicas=hvd.size(), rank=hvd.rank())
+        loader_dataset = data_utils.DataLoader(loader, batch_size=batch_size, shuffle = False, sampler = cifar_sampler)
         return loader_dataset
 
     def return_dataset(self):

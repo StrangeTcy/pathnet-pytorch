@@ -6,12 +6,13 @@ import torch.utils.data as data_utils
 
 import common
 
+import horovod.torch as hvd
 
 class Dataset():
     
     def __init__(self, args):
         """load cSVHN dataset"""
-        print("Loading cSVHN dataset...")
+        print("Loading cSVHN dataset in a really old & clumsy way.Sorry!...")
         train_data = scipy.io.loadmat('./data/svhn/train_32x32.mat')
         test_data = scipy.io.loadmat('./data/svhn/test_32x32.mat')
         self.train_loader = self.convert2tensor(train_data, args.batch_size, args.trainset_limit)
@@ -38,7 +39,8 @@ class Dataset():
         tensor_target = torch.from_numpy(target)
 
         loader = data_utils.TensorDataset(tensor_data, tensor_target)
-        loader_dataset = data_utils.DataLoader(loader, batch_size=batch_size, shuffle = True)
+        svhn_sampler = data_utils.distributed.DistributedSampler(loader, num_replicas=hvd.size(), rank=hvd.rank())
+        loader_dataset = data_utils.DataLoader(loader, batch_size=batch_size, shuffle = False, sampler = svhn_sampler)
         return loader_dataset
 
     def return_dataset(self):

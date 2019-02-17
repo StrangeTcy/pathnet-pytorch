@@ -14,8 +14,14 @@ import cifar_dataset
 import visualize
 import get_svhn_data
 
+from tqdm import tqdm
+
+
+# import torch.utils.data.distributed
+import horovod.torch as hvd
+
 # Training settings
-parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
+parser = argparse.ArgumentParser(description='PyTorch PathNet Implementation')
 
 
 parser.add_argument('--L', type=int, default=3, metavar='N',
@@ -25,13 +31,15 @@ parser.add_argument('--M', type=int, default=10, metavar='N',
 parser.add_argument('--N', type=int, default=3, metavar='N',
                     help='number of active units')
 parser.add_argument('--pop', type=int, default=64, metavar='N',
-                    help='number of gene')
+                    help='number of genes')
 parser.add_argument('--batch-size', type=int, default=16, metavar='N',
                     help='input batch size for training (default: 16)')
 parser.add_argument('--num-batch', type=int, default=50, metavar='N',
                     help='input batch number for each episode (default: 50)')
 parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                     help='learning rate (default: 0.01)')
+parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
+                    help='SGD momentum (default: 0.5)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='enables CUDA training')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
@@ -62,15 +70,27 @@ parser.add_argument('--testset-limit', type=int, default=1000, metavar='N',
                     help='test dataset limitation for RAM')
 parser.add_argument('--cifar-first', action='store_true', default=False,
                     help='cifar trained first')
+parser.add_argument('--fp16-allreduce', action='store_true', default=False,
+                    help='use fp16 compression during allreduce')
+
 
 args = parser.parse_args()
-args.cuda = not args.no_cuda and torch.cuda.is_available()
-kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+use_cuda = not args.no_cuda and torch.cuda.is_available()
+kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
+
+device = torch.device("cuda" if use_cuda else "cpu")
+
+hvd.init()
 
 torch.manual_seed(args.seed)
-if args.cuda:
+if use_cuda:
+    # Horovod: pin GPU to local rank.
+    torch.cuda.set_device(hvd.local_rank())
     torch.cuda.manual_seed(args.seed)
 
+
+# Dear Machine, this is clumsy.
+# I'll need to update thats
 def cifar_svhn_data(cifar):
     if cifar:
         print("Extracting cifar dataset...")
@@ -84,7 +104,14 @@ def cifar_svhn_data(cifar):
 
 
 def train_pathnet(model, gene, visualizer, train_loader, best_fitness, best_path, gen, vis_color):
+    # print ("main.train_pathnet was called:")
+    # print ("with model = {}, gene = {}, visualizer = {},\
+    #  train_loader = {}, best_fitness = {}, best_path = {},\
+    #   gen = {}, vis_color = {}".\
+    #     format(model, gene, visualizer, train_loader, best_fitness, best_path, gen, vis_color))
+    # 
     pathways = gene.sample()
+    # print ("Now we have pathways = {}".format(pathways))
     fitnesses = []
     train_data = [(data, target) for (data,target) in train_loader]
     for pathway in pathways:
@@ -95,10 +122,12 @@ def train_pathnet(model, gene, visualizer, train_loader, best_fitness, best_path
 
     gene.overwrite(pathways, fitnesses)
     genes = gene.return_all_genotypes()
+    # print ("Now genes = {}".format(genes))
     visualizer.show(genes, vis_color)
     if max(fitnesses) > best_fitness:
         best_fitness = max(fitnesses)
         best_path = pathways[fitnesses.index(max(fitnesses))].return_genotype()
+    print ("best_fitness = {}, best_fitness = {}".format(best_fitness, best_path))
     return best_fitness, best_path, max(fitnesses)
 
 def train_control(model, gene, visualizer, train_loader, gen):        
@@ -111,13 +140,14 @@ def train_control(model, gene, visualizer, train_loader, gen):
     return fitness
 
 def main():
-    model = pathnet.Net(args)
+    model = pathnet.Net(args, device)
+    # Horovod: broadcast parameters.
+    hvd.broadcast_parameters(model.state_dict(), root_rank=0)
     gene = genotype.Genetic(args.L, args.M, args.N, args.pop)
     module_num = [args.M] * args.L
     visualizer = visualize.GraphVisualize(module_num, args.vis)
     
-    if args.cuda:
-        model.cuda()
+    
     
     if not os.path.isdir('./result'):
         os.makedirs("./result")
@@ -126,21 +156,25 @@ def main():
 
     if not args.cifar_svhn:
         if not os.path.isdir('./data/mnist'):
-            os.system('./get_mnist_data.sh')
+            os.system('./get_mnist_data.sh') 
+            # Oh my dear Machine, 
+            # that's an old and ugly way to get mnist
 
-        if os.path.exists('./result/result_mnist.pickle'):
-            f = open('./result/result_mnist.pickle','r')
+        if (os.path.exists('./result/result_mnist.pickle') and os.path.getsize('./result/result_mnist.pickle') > 0):
+
+            f = open('./result/result_mnist.pickle','rb')
             result = pickle.load(f)
             f.close()
         else:
             result = []
 
         prob = args.noise_prob
+        #TODO: import this the normal, distributed way
         dataset = mnist_dataset.Dataset(prob)
         labels = random.sample(range(10), 2)
         print("Two training classes : {} and {}".format(labels[0], labels[1]))
         dataset.set_binary_class(labels[0], labels[1])
-        train_loader = dataset.convert2tensor(args)
+        train_loader = dataset.convert2tensor(args, kwargs)
 
     else:
         get_svhn_data.download()
@@ -164,9 +198,11 @@ def main():
     best_path = [[None] * args.N] * args.L
     gen = 0
     first_fitness = []
-    for gen in range(args.generation_limit):
+    for gen in tqdm(range(args.generation_limit)):
         if not args.control:
+            print ("We got to the not args.control branch")
             best_fitness, best_path, max_fitness = train_pathnet(model, gene, visualizer, train_loader, best_fitness, best_path, gen, 'm')
+            print ("And now we have best_fitness = {} and best_path = {}".format(best_fitness, best_path))
             first_fitness.append(max_fitness)
 
         else: ##control experiment
@@ -176,7 +212,9 @@ def main():
     print("First task done!! Move to next task")
     print("Second task started...")
 
+
     if not args.control:
+        print ("This is the not args.control branch")
         gene = genotype.Genetic(args.L, args.M, args.N, args.pop)
         '''
         if not args.cifar_svhn:
@@ -200,6 +238,7 @@ def main():
             '''
     #labels = random.sample(range(10), 2)
     if not args.cifar_svhn:
+        print ("This is the not args.cifar_svhn branch")
         c_1 = labels[0]
         
         while True:
@@ -212,6 +251,7 @@ def main():
         train_loader = dataset.convert2tensor(args)
 
     else:
+        print ("we're about to call cifar_svhn_data")
         train_loader, test_loader = cifar_svhn_data(not args.cifar_first)
 
 
@@ -221,8 +261,9 @@ def main():
     gen = 0
 
     second_fitness = []
-    for gen in range(args.generation_limit):
+    for gen in tqdm(range(args.generation_limit)):
         if not args.control:
+            print ("We're in the second task not args.control branch")
             best_fitness, best_path, max_fitness = train_pathnet(model, gene, visualizer, train_loader, best_fitness, best_path, gen, 'c')
             second_fitness.append(max_fitness)
 
@@ -248,9 +289,9 @@ def main():
                     result.append(('pathnet_svhn_first', args.threshold, first_fitness, second_fitness))
 
         if not args.cifar_svhn:
-            f = open('./result/result_mnist.pickle', 'w')
+            f = open('./result/result_mnist.pickle', 'wb')
         else:
-            f = open('./result/result_cifar_svhn.pickle', 'w')
+            f = open('./result/result_cifar_svhn.pickle', 'wb')
         pickle.dump(result, f)
         f.close()
 

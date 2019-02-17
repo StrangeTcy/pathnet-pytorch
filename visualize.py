@@ -98,8 +98,9 @@ class GraphVisualize():
 
     def reset(self):
         nodes = self.graph.nodes(data = True)
-        edges = self.graph.edges()
+        edges = list(self.graph.edges())
         for node in nodes:
             node[1]['size'] = self.init_node_size
         for edge in edges:
             self.graph.remove_edge(*edge)
+        # self.graph.remove_edges_from(self.graph.edges())
